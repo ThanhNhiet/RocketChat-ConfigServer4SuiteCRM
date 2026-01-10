@@ -1,0 +1,16 @@
+{
+    "id": "bde713d6-d2c4-477f-ae9c-41264e75771d",
+    "version": "0.0.1",
+    "requiredApiVersion": "^1.44.0",
+    "iconFile": "icon.png",
+    "author": {
+        "name": "Nhiet Pham",
+        "homepage": "https://github.com/ThanhNhiet",
+        "support": "nhiethiz@gmail.com"
+    },
+    "name": "RCApiForSuiteCRM",
+    "nameSlug": "rcapiforsuitecrm",
+    "classFile": "RcApiForSuiteCrmApp.ts",
+    "description": "This is a Rocket.Chat custom api for SuiteCRM like create task by message...",
+    "implements": []
+}
