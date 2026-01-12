@@ -12,5 +12,23 @@
     "nameSlug": "rcapiforsuitecrm",
     "classFile": "RcApiForSuiteCrmApp.ts",
     "description": "This is a Rocket.Chat custom api for SuiteCRM like create task by message...",
-    "implements": []
+    "implements": [
+        "IUIKitInteractionHandler"
+    ],
+    "permissions": [
+        {
+            "name": "ui.registerButtons"
+        },
+        {
+            "name": "api"
+        },
+        {
+            "name": "networking",
+            "details": {
+                "domains": [
+                    "*"
+                ]
+            }
+        }
+    ]
 }
