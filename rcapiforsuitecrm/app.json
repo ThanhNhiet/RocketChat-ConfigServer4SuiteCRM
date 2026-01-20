@@ -8,10 +8,10 @@
         "homepage": "https://github.com/ThanhNhiet",
         "support": "nhiethiz@gmail.com"
     },
-    "name": "RCApiForSuiteCRM",
-    "nameSlug": "rcapiforsuitecrm",
-    "classFile": "RcApiForSuiteCrmApp.ts",
-    "description": "This is a Rocket.Chat custom api for SuiteCRM like create task by message...",
+    "name": "Create Task For SuiteCRM",
+    "nameSlug": "create-task-for-suitecrm",
+    "classFile": "CreateTaskForSuiteCRMApp.ts",
+    "description": "This app allows users to create tasks in SuiteCRM directly from Rocket.Chat messages.",
     "implements": [
         "IUIKitInteractionHandler"
     ],
@@ -29,6 +29,21 @@
                     "*"
                 ]
             }
+        },
+        {
+            "name": "persistence"
+        },
+        {
+            "name": "server-setting.read"
+        },
+        {
+            "name": "message.write"
+        },
+        {
+            "name": "room.read"
+        },
+        {
+            "name": "user.read"
         }
     ]
 }
