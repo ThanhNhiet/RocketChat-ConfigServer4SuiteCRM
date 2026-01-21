@@ -1,6 +1,7 @@
 // src/handlers/ActionHandler.ts
 import { IRead, IModify, IHttp, IPersistence } from '@rocket.chat/apps-engine/definition/accessors';
-import { UIKitActionButtonInteractionContext, IUIKitResponse } from '@rocket.chat/apps-engine/definition/uikit';
+import { UIKitActionButtonInteractionContext, UIKitBlockInteractionContext, IUIKitResponse } from '@rocket.chat/apps-engine/definition/uikit';
+import { RoomType } from '@rocket.chat/apps-engine/definition/rooms';
 import { AppEnum } from '../constants/enum';
 import { createTaskModal, createTokenSetupModal } from '../ui/CreateTaskModal';
 import { RocketChatAssociationModel, RocketChatAssociationRecord } from '@rocket.chat/apps-engine/definition/metadata';
@@ -23,39 +24,32 @@ export class ActionHandler {
     public async run(context: UIKitActionButtonInteractionContext): Promise<IUIKitResponse> {
         const data = context.getInteractionData();
 
-        // Kiểm tra xem nút bấm có phải là nút của mình không
+        // Handle Create Task button
         if (data.actionId === AppEnum.ACTION_CREATE_TASK) {
             const { message, user } = data;
 
-            // Check if user has saved token
+            // Check for existing user token
             const association = new RocketChatAssociationRecord(
                 RocketChatAssociationModel.USER,
                 user.id
             );
             
-            console.log('[SCRM] Checking for saved token for user:', user.id);
-            
             const records = await this.read.getPersistenceReader().readByAssociation(association);
             
-            console.log('[SCRM] Found records:', records?.length || 0);
-            
             const userTokenRecord = records?.find((record: any) => {
-                console.log('[SCRM] Checking record:', record.id, 'looking for:', `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`);
                 return record.id === `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`;
             }) as UserTokenRecord | undefined;
-            
-            console.log('[SCRM] Token found:', !!userTokenRecord?.token);
 
             let modal;
             if (!userTokenRecord || !userTokenRecord.token) {
-                // No token found, show token setup modal
+                // No token - show token setup modal
                 modal = await createTokenSetupModal({ 
                     modify: this.modify, 
                     message, 
                     user 
                 });
             } else {
-                // Token exists, show task creation modal
+                // Token exists - show task creation modal
                 modal = await createTaskModal({ 
                     modify: this.modify, 
                     message, 
@@ -66,39 +60,90 @@ export class ActionHandler {
                 });
             }
 
-            // Mở modal
+            // Open modal
             return context.getInteractionResponder().openModalViewResponse(modal);
         }
-        
+
+        return context.getInteractionResponder().successResponse();
+    }
+
+    // Handle block interactions (reset token button)
+    public async runBlockAction(context: UIKitBlockInteractionContext): Promise<IUIKitResponse> {
+        const data = context.getInteractionData();
+
         // Handle reset token action
         if (data.actionId === AppEnum.ACTION_RESET_TOKEN) {
             const { user } = data;
             
-            console.log('[SCRM] Resetting token for user:', user.id);
-            
             try {
-                // Delete existing token
+                // Delete existing token from persistence
                 const association = new RocketChatAssociationRecord(
                     RocketChatAssociationModel.USER,
                     user.id
                 );
                 
-                // Remove token from persistence
                 await this.persistence.removeByAssociation(association);
                 
-                console.log('[SCRM] Token reset successfully');
+                // Send notification about reset success
+                try {
+                    const appUser = await this.read.getUserReader().getAppUser();
+                    if (appUser) {
+                        // Find or create DM room
+                        let targetRoom = await this.read.getRoomReader().getDirectByUsernames([appUser.username, user.username]);
+                        
+                        if (!targetRoom) {
+                            const roomBuilder = this.modify.getCreator().startRoom()
+                                .setType(RoomType.DIRECT_MESSAGE)
+                                .setCreator(appUser)
+                                .addMemberToBeAddedByUsername(user.username);
+                            
+                            const roomId = await this.modify.getCreator().finish(roomBuilder);
+                            const newRoom = await this.read.getRoomReader().getById(roomId);
+                            if (newRoom) {
+                                targetRoom = newRoom;
+                            }
+                        }
+                        
+                        if (targetRoom) {
+                            const messageBuilder = this.modify.getCreator().startMessage()
+                                .setSender(appUser)
+                                .setRoom(targetRoom)
+                                .setText(`🔄 **Token Reset Successfully**\n\n` +
+                                        `Your SuiteCRM token has been removed. Use the "Create Task" button to set up a new token.`)
+                                .setGroupable(false);
+                            
+                            await this.modify.getCreator().finish(messageBuilder);
+                        }
+                    }
+                } catch (notifError) {
+                    // Notification failed but token was reset
+                }
                 
-                // Show token setup modal
-                const modal = await createTokenSetupModal({ 
-                    modify: this.modify, 
-                    message: undefined, 
-                    user 
+                // Show reset confirmation modal
+                const blockBuilder = this.modify.getCreator().getBlockBuilder();
+                
+                const confirmationBlocks = [
+                    blockBuilder.addSectionBlock({
+                        text: blockBuilder.newMarkdownTextObject(
+                            '✅ **Token Reset Successfully**\n\n' +
+                            'Your SuiteCRM token has been removed.\n\n' +
+                            '**Next Steps:**\n' +
+                            '1. Close this dialog\n' +
+                            '2. Use the "Create Task" button to set up a new token'
+                        )
+                    }).getBlocks()[0]
+                ];
+                
+                return context.getInteractionResponder().updateModalViewResponse({
+                    id: AppEnum.TOKEN_SETUP_MODAL_ID,
+                    title: blockBuilder.newPlainTextObject('Reset Complete'),
+                    blocks: confirmationBlocks,
+                    close: blockBuilder.newButtonElement({
+                        text: blockBuilder.newPlainTextObject('Close'),
+                    })
                 });
                 
-                return context.getInteractionResponder().updateModalViewResponse(modal);
-                
             } catch (error) {
-                console.error('[SCRM] Error resetting token:', error);
                 return context.getInteractionResponder().errorResponse();
             }
         }

@@ -17,7 +17,8 @@ import {
     IUIKitInteractionHandler,
     IUIKitResponse,
     UIKitActionButtonInteractionContext,
-    UIKitViewSubmitInteractionContext
+    UIKitViewSubmitInteractionContext,
+    UIKitBlockInteractionContext
 } from '@rocket.chat/apps-engine/definition/uikit';
 import { AppEnum } from './client/constants/enum';
 import { ActionHandler } from './client/handlers/ActionHandler';
@@ -67,6 +68,18 @@ export class CreateTaskForSuiteCRMApp extends App implements IUIKitInteractionHa
     ): Promise<IUIKitResponse> {
         // Gọi class xử lý riêng
         return new ActionHandler(read, http, modify, persistence).run(context);
+    }
+
+    // 2.1. Điều phối sự kiện block action (cho reset token button)
+    public async executeBlockActionHandler(
+        context: UIKitBlockInteractionContext,
+        read: IRead,
+        http: IHttp,
+        persistence: IPersistence,
+        modify: IModify
+    ): Promise<IUIKitResponse> {
+        // Gọi class xử lý riêng
+        return new ActionHandler(read, http, modify, persistence).runBlockAction(context);
     }
 
     // 3. Điều phối sự kiện Submit Modal

@@ -40,7 +40,13 @@
             "name": "message.write"
         },
         {
+            "name": "message.read"
+        },
+        {
             "name": "room.read"
+        },
+        {
+            "name": "room.write"
         },
         {
             "name": "user.read"

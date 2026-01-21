@@ -1,12 +1,13 @@
 // src/handlers/SubmitHandler.ts
 import { IRead, IModify, IHttp, IPersistence } from '@rocket.chat/apps-engine/definition/accessors';
 import { UIKitViewSubmitInteractionContext, IUIKitResponse } from '@rocket.chat/apps-engine/definition/uikit';
+import { IRoom } from '@rocket.chat/apps-engine/definition/rooms';
+import { IMessage } from '@rocket.chat/apps-engine/definition/messages';
+import { IUser } from '@rocket.chat/apps-engine/definition/users';
+import { RoomType } from '@rocket.chat/apps-engine/definition/rooms';
 import { AppEnum } from '../constants/enum';
 import { RocketChatAssociationModel, RocketChatAssociationRecord } from '@rocket.chat/apps-engine/definition/metadata';
-import { createTaskModal, createTokenSetupModal } from '../ui/CreateTaskModal';
-import { IUser } from '@rocket.chat/apps-engine/definition/users';
-import { IRoom } from '@rocket.chat/apps-engine/definition/rooms';
-import { RoomType } from '@rocket.chat/apps-engine/definition/rooms';
+import { createTaskModal } from '../ui/CreateTaskModal';
 
 interface SCRMService {
     serverURL: string;
@@ -55,7 +56,7 @@ export class SubmitHandler {
                     }
                 }
             } catch (error) {
-                // Failed to get/create room
+                console.log('[Notification] Error getting/creating DM room:', error);
             }
         }
 
@@ -64,7 +65,7 @@ export class SubmitHandler {
             try {
                 const appUser = await this.read.getUserReader().getAppUser();
                 if (appUser) {
-                    // Dùng getCreator().startMessage() thay vì getNotifier()
+                    // Dùng getCreator().startMessage() với app user như bot
                     const messageBuilder = this.modify.getCreator().startMessage()
                         .setSender(appUser)
                         .setRoom(targetRoom)
@@ -73,48 +74,67 @@ export class SubmitHandler {
 
                     // Lệnh này sẽ lưu tin nhắn vào DB và bắn thông báo cho User
                     await this.modify.getCreator().finish(messageBuilder);
+                    console.log('[Notification] Message sent successfully to room:', targetRoom.id);
                 }
             } catch (error) {
-                // Failed to send message
+                console.log('[Notification] Error sending message:', error);
             }
+        } else {
+            console.log('[Notification] Cannot send message: No room context available.');
         }
     }
 
     public async run(context: UIKitViewSubmitInteractionContext): Promise<IUIKitResponse> {
         const data = context.getInteractionData();
-        const { view, user, room } = data;
+        const { view, user } = data;
 
-        // Handle token setup modal submission
+        console.log('[SCRM] Submit handler called for view ID:', view.id);
+        console.log('[SCRM] Expected token setup modal ID:', AppEnum.TOKEN_SETUP_MODAL_ID);
+        console.log('[SCRM] Expected task modal ID:', AppEnum.MODAL_ID);
+
+        // Handle token setup modal
         if (view.id === AppEnum.TOKEN_SETUP_MODAL_ID) {
+            console.log('[SCRM] Processing token setup modal');
+            console.log('[SCRM] Expected BLOCK_ID:', AppEnum.BLOCK_TOKEN_INPUT);
+            console.log('[SCRM] Expected INPUT_ID:', AppEnum.INPUT_TOKEN);
             const state = view.state as any;
             
-            // Extract token value from form state
+            console.log('[SCRM] Full form state:', JSON.stringify(state, null, 2));
+            
+            // Try different ways to get the token value
             let token = state?.[AppEnum.BLOCK_TOKEN_INPUT]?.[AppEnum.INPUT_TOKEN]?.value;
             
-            // Try alternative access patterns
+            // If that doesn't work, try alternative access patterns
             if (!token) {
                 token = state?.[AppEnum.BLOCK_TOKEN_INPUT]?.[AppEnum.INPUT_TOKEN];
+                console.log('[SCRM] Trying alternative access pattern 1:', !!token);
             }
             
             if (!token) {
+                // Sometimes the value is directly under the input key
                 const blockState = state?.[AppEnum.BLOCK_TOKEN_INPUT];
                 if (blockState) {
+                    console.log('[SCRM] Block state structure:', JSON.stringify(blockState, null, 2));
                     token = blockState[AppEnum.INPUT_TOKEN]?.value || blockState[AppEnum.INPUT_TOKEN];
                 }
             }
 
+            console.log('[SCRM] Token setup - received token:', !!token, 'length:', token?.length || 0);
+            console.log('[SCRM] Token preview:', token ? token.substring(0, 10) + '...' : 'null/undefined');
+
             if (!token || !token.trim()) {
+                console.log('[SCRM] Token setup failed - empty token');
                 return context.getInteractionResponder().errorResponse();
             }
 
             try {
-                // Save token to persistence storage
+                // Save token to persistence
                 const association = new RocketChatAssociationRecord(
                     RocketChatAssociationModel.USER,
                     user.id
                 );
                 
-                // Create token record
+                // Create token record with proper structure
                 const tokenRecord = {
                     id: `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`,
                     token: token.trim(),
@@ -122,125 +142,232 @@ export class SubmitHandler {
                     createdAt: new Date().toISOString()
                 };
                 
+                console.log('[SCRM] Saving token record:', { id: tokenRecord.id, userId: user.id });
+                
                 await this.persistence.createWithAssociation(
                     tokenRecord,
                     association
                 );
 
-                // Send success notification
-                await this.sendNotification(
-                    user, 
-                    data.room,
-                    `✅ **Token Saved Successfully!**\n` +
-                    `Your Personal Access Token has been saved. You can now create tasks using the Create Task button.`
-                );
+                console.log('[SCRM] Token saved successfully');
 
-                // Close modal after successful save
-                return context.getInteractionResponder().successResponse();
+                // Send token success notification
+                try {
+                    console.log('[SCRM] Attempting to send token success notification...');
+                    console.log('[SCRM] Token setup context data:', JSON.stringify({
+                        hasTriggerId: !!data.triggerId,
+                        triggerId: data.triggerId,
+                        hasRoom: !!data.room,
+                        roomId: data.room?.id,
+                        userId: user.id,
+                        userName: user.username
+                    }, null, 2));
+                    
+                    let room: IRoom | undefined;
+                    
+                    console.log('[SCRM] Attempting to get room for token success notification...');
+                    
+                    // Try triggerId as message ID to get message then room
+                    if (data.triggerId) {
+                        try {
+                            const message = await this.read.getMessageReader().getById(data.triggerId);
+                            if (message?.room) {
+                                room = message.room;
+                                console.log('[SCRM] Got room from message via triggerId for token success');
+                            }
+                        } catch (e: any) {
+                            console.log('[SCRM] Could not get message from triggerId for token success:', e.message);
+                        }
+                    }
+                    
+                    // Fallback to direct message  
+                    if (!room) {
+                        try {
+                            room = await this.read.getRoomReader().getDirectByUsernames([user.username]);
+                            if (room) {
+                                console.log('[SCRM] Using direct room for token success');
+                            }
+                        } catch (e: any) {
+                            console.log('[SCRM] Could not get direct room for token success:', e.message);
+                        }
+                    }
+                    
+                    if (room) {
+                        const messageBuilder = this.modify.getCreator().startMessage()
+                            .setSender(user)
+                            .setRoom(room)
+                            .setText(`✅ **Token Saved Successfully!**\n\n` +
+                                    `Your Personal Access Token has been saved and you can now create tasks.`);
+                        
+                        await this.modify.getCreator().finish(messageBuilder);
+                        console.log('[SCRM] Token success message sent to room');
+                    } else {
+                        console.log('[SCRM] No room available for token success notification');
+                    }
+                } catch (msgError) {
+                    console.error('[SCRM] Error sending token success message:', msgError);
+                }
+
+                // After saving token, open task creation modal
+                const taskModal = await createTaskModal({ 
+                    modify: this.modify, 
+                    message: undefined, // No message context from token setup
+                    user,
+                    http: this.http,
+                    persistence: this.persistence,
+                    read: this.read
+                });
+
+                return context.getInteractionResponder().updateModalViewResponse(taskModal);
 
             } catch (error) {
+                console.error('Error saving token:', error);
                 return context.getInteractionResponder().errorResponse();
             }
         }
 
-        // Handle task creation modal submission
+        // Handle task creation modal
         if (view.id === AppEnum.MODAL_ID) {
+            console.log('[SCRM Task Creation] Debug context data:', JSON.stringify({
+                hasTriggerId: !!data.triggerId,
+                triggerId: data.triggerId,
+                hasRoom: !!data.room,
+                roomId: data.room?.id,
+                roomType: data.room?.type,
+                userId: user.id,
+                userName: user.username
+            }, null, 2));
+            
             const state = view.state as any;
 
-            // Extract form data
+            console.log('[SCRM Task Creation] Full form state structure:', JSON.stringify(state, null, 2));
+            console.log('[SCRM Task Creation] Looking for block IDs:', {
+                BLOCK_TASK_NAME: AppEnum.BLOCK_TASK_NAME,
+                BLOCK_TASK_DESC: AppEnum.BLOCK_TASK_DESC,
+                BLOCK_TASK_PRIORITY: AppEnum.BLOCK_TASK_PRIORITY
+            });
+            console.log('[SCRM Task Creation] Looking for input IDs:', {
+                INPUT_TASK_NAME: AppEnum.INPUT_TASK_NAME,
+                INPUT_TASK_DESC: AppEnum.INPUT_TASK_DESC,
+                INPUT_TASK_PRIORITY: AppEnum.INPUT_TASK_PRIORITY
+            });
+
+            // Lấy dữ liệu từ State dựa trên các ID đã định nghĩa trong enum
             const taskName = state?.[AppEnum.BLOCK_TASK_NAME]?.[AppEnum.INPUT_TASK_NAME];
             const taskDesc = state?.[AppEnum.BLOCK_TASK_DESC]?.[AppEnum.INPUT_TASK_DESC];
             const taskPriority = state?.[AppEnum.BLOCK_TASK_PRIORITY]?.[AppEnum.INPUT_TASK_PRIORITY] || 'Medium';
 
-            // Check if this is a reset token request (no task name)
+            console.log('[SCRM Task Creation] Processing task creation with data:', {
+                taskName: taskName,
+                taskDesc: taskDesc?.substring(0, 50) + '...',
+                taskPriority: taskPriority
+            });
+
             if (!taskName?.trim()) {
-                try {
-                    // Delete existing token
-                    const association = new RocketChatAssociationRecord(
-                        RocketChatAssociationModel.USER,
-                        user.id
-                    );
-                    
-                    await this.persistence.removeByAssociation(association);
-                    
-                    // Send reset notification
-                    await this.sendNotification(
-                        user, 
-                        data.room,
-                        `🔄 **Token Reset Successfully**\n` +
-                        `Your SuiteCRM token has been removed. Use the "Create Task" button to set up a new token.`
-                    );
-                    
-                    // Close modal after reset
-                    return context.getInteractionResponder().successResponse();
-                    
-                } catch (error) {
-                    return context.getInteractionResponder().errorResponse();
-                }
+                console.log('[SCRM Task Creation] Failed - empty task name');
+                return context.getInteractionResponder().errorResponse();
             }
 
             try {
-                // Get user's saved token
+                // Get user token
                 const association = new RocketChatAssociationRecord(
                     RocketChatAssociationModel.USER,
                     user.id
                 );
                 
+                console.log('[SCRM Task Creation] Checking for saved token for user:', user.id);
+                
                 const records = await this.read.getPersistenceReader().readByAssociation(association);
                 
+                console.log('[SCRM Task Creation] Found records:', records?.length || 0);
+                
                 const userTokenRecord = records?.find((record: any) => {
+                    console.log('[SCRM Task Creation] Checking record:', record.id, 'looking for:', `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`);
                     return record.id === `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`;
                 }) as UserTokenRecord | undefined;
+                
+                console.log('[SCRM Task Creation] Token found:', !!userTokenRecord?.token);
 
                 if (!userTokenRecord?.token) {
+                    console.log('[SCRM Task Creation] No token found');
                     return context.getInteractionResponder().errorResponse();
                 }
 
-                // Get server URL from settings
+                // Get Rocket.Chat server URL from app settings
                 let serverUrl: string;
                 try {
                     const settings = this.read.getEnvironmentReader().getSettings();
                     serverUrl = await settings.getValueById('server_url');
+                    console.log('[SCRM Task Creation] Server URL from settings:', serverUrl);
                 } catch (error) {
-                    // Fallback to default
-                    serverUrl = 'http://localhost:3000';
+                    console.error('[SCRM Task Creation] Error getting server URL from settings:', error);
+                    // Fallback to default or hardcoded value if needed
+                    serverUrl = 'http://localhost:3000'; // You might want to configure this
                 }
 
-                // Get SCRM service connection
+                // Get SCRM service info
+                console.log('[SCRM Task Creation] Getting SCRM service...');
                 const scrmService = await this.getSCRMService(userTokenRecord.token, serverUrl, user.id);
                 
                 if (!scrmService) {
+                    console.log('[SCRM Task Creation] Failed to get SCRM service');
                     return context.getInteractionResponder().errorResponse();
                 }
+                
+                console.log('[SCRM Task Creation] SCRM service obtained successfully');
 
-                // Check task creation permissions
+                // Check task permissions
+                console.log('[SCRM Task Creation] Checking task permissions...');
                 const hasPermission = await this.checkTaskPermissions(scrmService);
+                console.log('[SCRM Task Creation] Permission check result:', hasPermission);
                 
                 if (!hasPermission) {
+                    console.log('[SCRM Task Creation] Permission denied');
                     return context.getInteractionResponder().errorResponse();
                 }
 
                 // Create task in SuiteCRM
+                console.log('[SCRM Task Creation] Creating task in SuiteCRM...');
                 const success = await this.createTaskInSuiteCRM(scrmService, {
                     name: taskName,
                     description: taskDesc,
                     priority: taskPriority
                 });
+                
+                console.log('[SCRM Task Creation] Task creation result:', success);
 
                 if (success) {
+                    console.log('[SCRM Task Creation] Task created successfully!');
+                    console.log(`[SCRM Task Creation] Task details - Name: ${taskName}, Priority: ${taskPriority}, Description: ${taskDesc || 'No description'}`);
+                    
+                    // Send success notification using app bot
                     await this.sendNotification(
                         user, 
-                        room, 
-                        `✅ **Task Created Successfully!**\n🔹 Name: ${taskName}\n🔹 Description: ${taskDesc || 'No description'}\n🔹 Priority: ${taskPriority}`
+                        data.room, // Try room from context first
+                        `🎉 **Task Created Successfully!**\n\n` +
+                        `**Task Name:** ${taskName}\n` +
+                        `**Priority:** ${taskPriority}\n` +
+                        `**Description:** ${taskDesc || 'No description'}\n\n` +
+                        `✅ Task has been created in SuiteCRM`
                     );
+                    
                     return context.getInteractionResponder().successResponse();
                 } else {
-                    await this.sendNotification(user, room, "❌ Failed to create task in SuiteCRM. Please check logs.");
+                    console.log('[SCRM Task Creation] Task creation failed');
+                    
+                    // Send error notification using app bot
+                    await this.sendNotification(
+                        user, 
+                        data.room,
+                        `❌ **Failed to Create Task**\n\n` +
+                        `There was an error creating the task in SuiteCRM. Please try again.`
+                    );
+                    
                     return context.getInteractionResponder().errorResponse();
                 }
 
             } catch (error) {
-                await this.sendNotification(user, room, "❌ An internal error occurred while creating the task.");
+                console.error('Error creating task:', error);
                 return context.getInteractionResponder().errorResponse();
             }
         }
@@ -283,6 +410,7 @@ export class SubmitHandler {
 
             return service;
         } catch (error) {
+            console.error('Error getting SCRM service:', error);
             return null;
         }
     }
@@ -337,6 +465,7 @@ export class SubmitHandler {
                 expiresAt: Date.now() + (tokenData.expires_in * 1000)
             };
         } catch (error) {
+            console.error('Error refreshing token:', error);
             return null;
         }
     }
@@ -373,6 +502,7 @@ export class SubmitHandler {
             // If roles exist but no specific access permission found, deny access
             return false;
         } catch (error) {
+            console.error('Error checking task permissions:', error);
             return false;
         }
     }
@@ -398,6 +528,7 @@ export class SubmitHandler {
 
             return response.statusCode === 201;
         } catch (error) {
+            console.error('Error creating task in SuiteCRM:', error);
             return false;
         }
     }

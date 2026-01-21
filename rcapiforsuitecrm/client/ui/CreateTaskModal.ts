@@ -28,6 +28,7 @@ interface UserTokenRecord {
     createdAt: Date;
 }
 
+// Create modal for token setup with instructions
 export async function createTokenSetupModal({
     modify,
     message,
@@ -39,7 +40,7 @@ export async function createTokenSetupModal({
 }): Promise<IUIKitModalViewParam> {
     const block = modify.getCreator().getBlockBuilder();
 
-    // Informational section
+    // Instructions for token setup
     block.addSectionBlock({
         text: block.newMarkdownTextObject(
             '⚠️ **Token Required**\n\n' +
@@ -52,7 +53,7 @@ export async function createTokenSetupModal({
         )
     });
 
-    // Token input
+    // Token input field
     block.addInputBlock({
         blockId: AppEnum.BLOCK_TOKEN_INPUT,
         label: block.newPlainTextObject('Personal Access Token'),
@@ -73,6 +74,7 @@ export async function createTokenSetupModal({
     };
 }
 
+// Create main task creation modal
 export async function createTaskModal({
     modify,
     message,
@@ -97,27 +99,27 @@ export async function createTaskModal({
         scrmService: null
     };
 
-    // Initialize SCRM connection if we have the required dependencies
+    // Check SCRM connection and permissions
     if (http && persistence && read) {
         modalState = await initializeSCRM(user, http, persistence, read);
     }
 
-    // Show loading state
+    // Display loading state
     if (modalState.isLoading) {
         block.addSectionBlock({
             text: block.newMarkdownTextObject('🔄 **Loading SCRM connection...**')
         });
     }
     
-    // Show error message if any
+    // Display error messages
     if (modalState.errorMessage) {
         block.addSectionBlock({
             text: block.newMarkdownTextObject(`⚠️ **${modalState.errorMessage}**`)
         });
     }
 
-    // Only show form if we can create task
-    if (modalState.canCreateTask || !http) { // Allow form when http is not available (fallback)
+    // Show task form if user has permissions
+    if (modalState.canCreateTask || !http) {
         // Input 1: Task Name
         block.addInputBlock({
             blockId: AppEnum.BLOCK_TASK_NAME,
@@ -186,7 +188,7 @@ export async function createTaskModal({
             blockId: 'token_actions',
             elements: [
                 block.newButtonElement({
-                    text: block.newPlainTextObject('🔄 Reset Token'),
+                    text: block.newPlainTextObject('Reset Token'),
                     actionId: 'reset_token_action',
                     style: ButtonStyle.DANGER
                 })
@@ -194,36 +196,38 @@ export async function createTaskModal({
         });
     }
 
+    // Determine submit button text and behavior
+    let submitText = 'Create Task';
+    if (!modalState.canCreateTask && modalState.errorMessage.includes('Token not found')) {
+        submitText = 'Setup Token';
+    } else if (!modalState.canCreateTask) {
+        submitText = 'Reset & Setup Token';
+    }
+
     return {
         id: AppEnum.MODAL_ID,
         title: block.newPlainTextObject('Create SuiteCRM Task'),
         blocks: block.getBlocks(),
         submit: block.newButtonElement({
-            text: block.newPlainTextObject(modalState.canCreateTask ? 'Create Task' : 'Create'),
+            text: block.newPlainTextObject(submitText),
         }),
     };
 }
 
+// Initialize SCRM connection and check permissions
 async function initializeSCRM(user: IUser, http: IHttp, persistence: IPersistence, read: IRead): Promise<ModalState> {
     try {
-        // Get user's saved token
+        // Retrieve user's saved token
         const association = new RocketChatAssociationRecord(
             RocketChatAssociationModel.USER,
             user.id
         );
         
-        console.log('[SCRM CreateTaskModal] Checking for saved token for user:', user.id);
-        
         const records = await read.getPersistenceReader().readByAssociation(association);
         
-        console.log('[SCRM CreateTaskModal] Found records:', records?.length || 0);
-        
         const userTokenRecord = records?.find((record: any) => {
-            console.log('[SCRM CreateTaskModal] Checking record:', record.id, 'looking for:', `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`);
             return record.id === `${AppEnum.PERSISTENCE_USER_TOKEN_PREFIX}${user.id}`;
         }) as UserTokenRecord | undefined;
-        
-        console.log('[SCRM CreateTaskModal] Token found:', !!userTokenRecord?.token);
 
         if (!userTokenRecord?.token) {
             return {
@@ -234,20 +238,17 @@ async function initializeSCRM(user: IUser, http: IHttp, persistence: IPersistenc
             };
         }
 
-        // Get server URL from settings
+        // Get server URL configuration
         let serverUrl: string;
         try {
             const settings = read.getEnvironmentReader().getSettings();
             serverUrl = await settings.getValueById('server_url');
-            console.log('[SCRM CreateTaskModal] Server URL from settings:', serverUrl);
         } catch (error) {
-            console.error('[SCRM CreateTaskModal] Error getting server URL from settings:', error);
-            // Fallback to default or hardcoded value
-            serverUrl = 'http://localhost:3000'; // You might want to configure this
+            // Fallback to default
+            serverUrl = 'http://localhost:3000';
         }
 
         if (!serverUrl) {
-            console.log('[SCRM CreateTaskModal] No server URL configured');
             return {
                 isLoading: false,
                 canCreateTask: false,
@@ -256,11 +257,10 @@ async function initializeSCRM(user: IUser, http: IHttp, persistence: IPersistenc
             };
         }
 
-        // Get SCRM service info
+        // Get SCRM service connection
         const scrmService = await getSCRMService(userTokenRecord.token, serverUrl, user.id, http);
         
         if (!scrmService) {
-            console.log('[SCRM CreateTaskModal] Failed to get SCRM service');
             return {
                 isLoading: false,
                 canCreateTask: false,
@@ -269,11 +269,8 @@ async function initializeSCRM(user: IUser, http: IHttp, persistence: IPersistenc
             };
         }
 
-        // Check task permissions
-        console.log('[SCRM CreateTaskModal] Checking task permissions...');
+        // Verify task creation permissions
         const hasPermission = await checkTaskPermissions(scrmService, http);
-        
-        console.log('[SCRM CreateTaskModal] Permission check result:', hasPermission);
         
         return {
             isLoading: false,
@@ -282,7 +279,6 @@ async function initializeSCRM(user: IUser, http: IHttp, persistence: IPersistenc
             scrmService
         };
     } catch (error) {
-        console.error('SCRM initialization error:', error);
         return {
             isLoading: false,
             canCreateTask: false,
@@ -319,14 +315,12 @@ async function getSCRMService(rcToken: string, serverUrl: string, userId: string
             id: data.services.id
         };
 
-        // Check if token is expired and refresh if needed
+        // Check if token needs refresh
         const now = Date.now();
         if (now >= service.expiresAt) {
-            console.log('[SCRM CreateTaskModal] Token expired, attempting refresh...');
             const refreshedService = await refreshAccessToken(service, serverUrl, rcToken, userId, http);
             if (!refreshedService) {
-                console.log('[SCRM CreateTaskModal] Token refresh failed, but continuing with existing token');
-                // Don't fail completely, continue with existing token in case it still works
+                // Continue with existing token if refresh fails
                 return service;
             }
             return refreshedService;
@@ -334,7 +328,6 @@ async function getSCRMService(rcToken: string, serverUrl: string, userId: string
 
         return service;
     } catch (error) {
-        console.error('Error getting SCRM service:', error);
         return null;
     }
 }
@@ -389,7 +382,6 @@ async function refreshAccessToken(service: SCRMService, rcServerUrl: string, rcT
             expiresAt: Date.now() + (tokenData.expires_in * 1000)
         };
     } catch (error) {
-        console.error('Error refreshing token:', error);
         return null;
     }
 }
@@ -426,7 +418,6 @@ async function checkTaskPermissions(service: SCRMService, http: IHttp): Promise<
         // If roles exist but no specific access permission found, deny access
         return false;
     } catch (error) {
-        console.error('Error checking task permissions:', error);
         return false;
     }
 }
